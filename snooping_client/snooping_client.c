@@ -26,6 +26,8 @@ sc_res_list_t g_sc_res_free_list;
 sc_res_list_t g_sc_res_retrieving_list;
 sc_res_list_t g_sc_res_stored_list;
 
+cache_rule_ctx_t *g_sc_cache_rule_ctx = NULL;
+
 static int sc_retrieve_inform(string_t *url);
 
 /*
@@ -132,7 +134,7 @@ static void sc_res_load_url(string_t *url)
     struct stat file_stat;
     sc_res_info_t *ri;
 
-    rule = cache_rule_get_rule(url);
+    rule = cache_rule_get_rule(g_sc_cache_rule_ctx, url);
     if (rule == NULL) {
         sc_dbg("Not find rule: %*s", (int)(url->len), url->data);
         return;
@@ -240,7 +242,7 @@ static int sc_spm_do_action(u8 act, u32 sid, char *url)
 
     memset(buf, 0, sizeof(buf));
     if (SC_SPM_SND_RCV_BUFLEN < sizeof(http_c2sp_req_pkt_t)) {
-        sc_dbg("small buf(%d) can not hold c2sp_req(%lu)", SC_SPM_SND_RCV_BUFLEN, sizeof(http_c2sp_req_pkt_t));
+        sc_dbg("small buf(%d) can not hold c2sp_req(%u)", SC_SPM_SND_RCV_BUFLEN, sizeof(http_c2sp_req_pkt_t));
         err = -1;
         goto out;
     }
@@ -259,7 +261,7 @@ static int sc_spm_do_action(u8 act, u32 sid, char *url)
     memset(buf, 0, sizeof(buf));
     nrecv = recvfrom(sockfd, buf, SC_SPM_SND_RCV_BUFLEN, 0, NULL, NULL);
     if (nrecv < 0) {
-        sc_dbg("recvfrom %d, is not valid to %lu: %s",
+        sc_dbg("recvfrom %d, is not valid to %u: %s",
                     nrecv, sizeof(http_c2sp_res_pkt_t), strerror(errno));
         err = -1;
         goto out;
@@ -428,7 +430,7 @@ static void sc_spm_serve(const int sockfd)
 #endif
 
     if (nrecv < sizeof(http_sp2c_req_pkt_t)) {
-        sc_dbg("recvfrom invalid %d bytes, less than %lu", nrecv, sizeof(http_sp2c_req_pkt_t));
+        sc_dbg("recvfrom invalid %d bytes, less than %u", nrecv, sizeof(http_sp2c_req_pkt_t));
         goto reply;
     }
 
@@ -549,8 +551,8 @@ static void sc_retrieve_process(string_t *url, string_t *file)
     } else if (pid == 0) {
         /* 子进程，执行wget */
         sc_create_full_path(file, 0600);
-        if (execlp("wget", "wget", url->data, "-O", file->data, (char *)0) < 0) {
-            sc_dbg("execlp() failed: wget %s -O %s", url->data, file->data);
+        if (execlp("wget", "wget", url->data, "-U NoSuchBrowser/1.0 -O", file->data, (char *)0) < 0) {
+            sc_dbg("execlp() failed: wget %s -U NoSuchBrowser/1.0 -O %s", url->data, file->data);
             exit(-1);
         }
     }
@@ -592,7 +594,7 @@ static int sc_retrieve_inform(string_t *url)
     int ret;
     pid_t pid;
 
-    rule = cache_rule_get_rule(url);
+    rule = cache_rule_get_rule(g_sc_cache_rule_ctx, url);
     if (rule == NULL) {
         sc_dbg("Not find rule: %*s", (int)(url->len), url->data);
         return -1;
@@ -864,8 +866,8 @@ int main(int argc, char *argv[])
     int rules_num;
     struct sockaddr_in sa;
 
-    if (argc < 2) {
-        printf("Usage: %s spm-ipaddr [hot-cache-rule]\n", argv[0]);
+    if (argc < 3) {
+        printf("Usage: %s spm-ipaddr hot-cache-rule\n", argv[0]);
         return -1;
     }
 
@@ -875,13 +877,11 @@ int main(int argc, char *argv[])
     }
     strncat(g_sc_sp_module_ipaddr_str, argv[1], SC_IPADDR_STR_BUFLEN_MAX - 1);
 
-    if (argc > 2) {
-        rules_num = cache_rule_load(argv[2]);
-        if (rules_num < 0) {
-            printf("Load rules failed: %s\n", argv[2]);
-        } else {
-            printf("Loaded %d rules\n", rules_num);
-        }
+    rules_num = cache_rule_load(argv[2], &g_sc_cache_rule_ctx);
+    if (rules_num < 0) {
+        printf("Load rules failed: %s\n", argv[2]);
+    } else {
+        printf("Loaded %d rules\n", rules_num);
     }
 
     /* TODO: 启动Nginx */
