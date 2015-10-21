@@ -8,8 +8,9 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
-
 #include <signal.h>
+
+#include <curl/curl.h>
 
 #include "snooping_client.h"
 
@@ -530,58 +531,116 @@ out:
     close(sockfd);
 }
 
+static size_t sc_retrieve_write(void *buffer, size_t size, size_t nmemb, void *stream)
+{
+    sc_res_file_t *f;
+
+    if (stream == NULL) {
+        sc_dbg("user data of stream is NULL");
+        return -1;
+    }
+
+    f = (sc_res_file_t *)stream;
+    if (f->fp == NULL) {
+        f->fp = fopen(f->path, "wb");
+        if (f->fp == NULL) {
+            sc_dbg("fopen() failed: %s", f->path);
+            return -1;
+        }
+    }
+
+    return fwrite(buffer, size, nmemb, f->fp);
+}
+
+static int sc_retrieve_download(string_t *url, string_t *file)
+{
+    char url_buf[HTTP_SP_URL_LEN_MAX + 1];
+    char file_buf[HTTP_SP_URL_LEN_MAX + HTTP_LOCAL_FILE_ROOT_MAX + 1];
+    sc_res_file_t f;
+    CURL *curl;
+    CURLcode rc;
+    int ret = 0;
+    long resp_code;
+    double speed;
+
+    memcpy(url_buf, url->data, url->len);
+    url_buf[url->len] = '\0';
+    memcpy(file_buf, file->data, file->len);
+    file_buf[file->len] = '\0';
+
+    f.path = file_buf;
+    f.fp = NULL;
+
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl = curl_easy_init();
+    if (curl == NULL) {
+        sc_dbg("curl_easy_init() failed");
+        goto out1;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url_buf);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sc_retrieve_write);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &f);
+
+    rc = curl_easy_perform(curl);
+    if (rc != CURLE_OK) {
+        sc_dbg("curl_easy_perform() failed: %s", curl_easy_strerror(rc));
+        goto out3;
+    }
+
+    rc = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &resp_code);
+    if (rc != CURLE_OK) {
+        sc_dbg("curl_easy_getinfo() RESPONSE_CODE failed: %s", curl_easy_strerror(rc));
+        goto out3;
+    }
+    if (resp_code != 200) {
+        sc_dbg("HTTP download response code error: %ld", resp_code);
+        goto out3;
+    }
+
+    rc = curl_easy_getinfo(curl, CURLINFO_SPEED_DOWNLOAD, &speed);
+    if (rc != CURLE_OK) {
+        sc_dbg("curl_easy_getinfo() SPEED_DOWNLOAD failed: %s", curl_easy_strerror(rc));
+        goto out3;
+    }
+    speed = speed / 1000;
+
+    sc_print("Success download @ %.2fKB/s: %s", speed, url_buf);
+    ret = 1;
+
+out3:
+    if (f.fp != NULL) {
+        fclose(f.fp);
+        f.fp = NULL;
+        if (ret == 0) {
+            /* 异常情况下的文件会被删除 */
+            sc_dbg("Delete innormal file: %s", file_buf);
+            remove(file_buf);
+        }
+    }
+out2:
+    curl_easy_cleanup(curl);
+out1:
+    curl_global_cleanup();
+out:
+    return ret;
+}
+
 static void sc_retrieve_process(string_t *url, string_t *file)
 {
-    pid_t pid;
-    int status, exit_status;
     int success = 0;
-
-    /* TODO: 启动Nginx */
-    if (signal(SIGCHLD, SIG_DFL) == SIG_ERR) {
-        sc_dbg("Default SIGCHLD failed.");
-        goto retrieve_notice;
-    }
 
     sc_print("Inform  ---\n\tURL:  %*s\n\tFile: %*s",
                     (int)(url->len), url->data, (int)(file->len), file->data);
+    sc_create_full_path(file, 0777);
 
-    if ((pid = fork()) < 0) {
-        sc_dbg("fork() failed.");
-        goto retrieve_notice;
-    } else if (pid == 0) {
-        /* 子进程，执行wget */
-        sc_create_full_path(file, 0600);
-        if (execlp("wget", "wget", url->data, "-U NoSuchBrowser/1.0 -O", file->data, (char *)0) < 0) {
-            sc_dbg("execlp() failed: wget %s -U NoSuchBrowser/1.0 -O %s", url->data, file->data);
-            exit(-1);
-        }
-    }
+    success = sc_retrieve_download(url, file);
 
-    if (wait(&status) != pid) {
-        sc_dbg("wait() failed.");
-        goto retrieve_notice;
-    }
-
-    if (WIFEXITED(status)) {
-        exit_status = WEXITSTATUS(status);
-        sc_dbg("normal termination, exit status = %d", exit_status);
-        if (exit_status == 0) {
-            success = 1;
-        }
-    } else if (WIFSIGNALED(status)){
-        sc_dbg("abnormal termination, signal number = %d", WTERMSIG(status));
-    } else if (WIFSTOPPED(status)) {
-        sc_dbg("child stopped, signal number = %d", WSTOPSIG(status));
-    } else {
-        sc_dbg("unknown status %d", status);
-    }
-
-retrieve_notice:
     if (success) {
-        sc_dbg("wget download success.");
+        sc_dbg("download success.");
         sc_retrieve_ret_result(url, 1);
     } else {
-        sc_dbg("wget download failed.");
+        sc_dbg("download failed.");
         sc_retrieve_ret_result(url, 0);
     }
 }

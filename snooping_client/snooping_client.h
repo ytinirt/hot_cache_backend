@@ -90,6 +90,11 @@ typedef struct sc_res_list_s {
     int count;
 } sc_res_list_t;
 
+typedef struct sc_res_file_s {
+    char *path;
+    FILE *fp;
+} sc_res_file_t;
+
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
 #define sc_dbg(fmt, arg...) \
