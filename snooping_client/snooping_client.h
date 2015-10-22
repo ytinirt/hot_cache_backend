@@ -14,7 +14,7 @@
 #define HTTP_URL_PREFIX             "http://"
 #define HTTP_URL_PRE_LEN            7       /* strlen("http://") */
 
-#define SC_WEB_SERVER_ROOT          "/usr/local/hot-cache/"
+#define SC_WEB_SERVER_ROOT          "/data/local/html/"
 #define SC_WEB_SERVER_ROOT_LEN      (sizeof(SC_WEB_SERVER_ROOT) - 1)
 #define SC_RES_RECORD_FILE          "http-cache.txt"
 
