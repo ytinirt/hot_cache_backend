@@ -23,8 +23,9 @@ typedef uint16_t u16;
 typedef uint32_t u32;
 
 /**********************************/
-#define HTTP_SP_URL_LEN_MAX 600
-#define HTTP_SP_URL_MAX (16*1024)
+#define HTTP_SP_URL_MAX                     (32 * 1024)
+#define HTTP_SP_URL_LEN_MAX                 600 /* °üÀ¨'\0' */
+#define HTTP_SP_KEY_LEN_MAX                 256 /* °üÀ¨'\0' */
 
 #define HTTP_LOCAL_FILE_ROOT_MAX 64
 
@@ -82,7 +83,9 @@ typedef struct sc_res_info_s {
     unsigned long flags;
     u32 sid;
     string_t url;
+    string_t key;
     char url_buf[HTTP_SP_URL_LEN_MAX];
+    char key_buf[HTTP_SP_KEY_LEN_MAX];
 } sc_res_info_t;
 
 typedef struct sc_res_list_s {
@@ -100,13 +103,13 @@ typedef struct sc_res_file_s {
 #define sc_dbg(fmt, arg...) \
     do { \
         if (SNOOPING_CLIENT_DEBUG) { \
-            fprintf(stderr, "[DBG]%20.19s: " fmt "\n", __func__, ##arg); \
+            fprintf(stderr, "[DBG]%-20.19s: " fmt "\n", __func__, ##arg); \
         } \
     } while (0)
 
 #define sc_print(fmt, arg...) \
     do { \
-        fprintf(stdout, fmt "\n", ##arg); \
+        fprintf(stdout, "[PRT]: " fmt "\n", ##arg); \
     } while (0)
 
 #endif /* __SNOOPING_CLIENT_H__ */

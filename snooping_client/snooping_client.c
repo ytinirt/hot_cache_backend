@@ -61,12 +61,13 @@ static void sc_res_copy_url(char *url, char *o_url, unsigned int len, char with_
     }
 }
 
-static sc_res_info_t *sc_res_find_stored(string_t *url)
+/* 必须根据key值查找，只有key值是url(资源)的唯一标识符 */
+static sc_res_info_t *sc_res_find_by_key(struct list_head *head, string_t *key)
 {
     sc_res_info_t *ri, *ret = NULL;
 
-    list_for_each_entry(ri, &g_sc_res_stored_list.list, list, sc_res_info_t) {
-        if (cache_rule_str_is_equal(&ri->url, url)) {
+    list_for_each_entry(ri, head, list, sc_res_info_t) {
+        if (cache_rule_str_is_equal(&ri->key, key)) {
             ret = ri;
             break;
         }
@@ -75,17 +76,56 @@ static sc_res_info_t *sc_res_find_stored(string_t *url)
     return ret;
 }
 
-static sc_res_info_t *sc_res_find_retrieving(string_t *url)
+static sc_res_info_t *sc_res_find_stored(string_t *url)
 {
-    sc_res_info_t *ri, *ret = NULL;
+    sc_res_info_t *ret = NULL;
+    cache_rule_t *cache_rule;
+    string_t key;
+    char key_tmp_buf[HTTP_SP_URL_LEN_MAX];
 
-    list_for_each_entry(ri, &g_sc_res_retrieving_list.list, list, sc_res_info_t) {
-        if (cache_rule_str_is_equal(&ri->url, url)) {
-            ret = ri;
-            break;
-        }
+    cache_rule = cache_rule_get_rule(g_sc_cache_rule_ctx, url);
+    if (cache_rule == NULL) {
+        sc_dbg("Not find cache rule: %*s", url->len, url->data);
+        goto out;
     }
 
+    key.data = key_tmp_buf;
+    key.len = HTTP_SP_URL_LEN_MAX;
+    if (cache_rule_url2local_key(url, cache_rule, &key) != 0) {
+        sc_dbg("Key generate failed: %*s", url->len, url->data);
+        goto out;
+    }
+
+    ret = sc_res_find_by_key(&g_sc_res_stored_list.list, &key);
+
+out:
+    return ret;
+}
+
+/* 必须根据key值查找，只有key值是url(资源)的唯一标识符 */
+static sc_res_info_t *sc_res_find_retrieving(string_t *url)
+{
+    sc_res_info_t *ret = NULL;
+    cache_rule_t *cache_rule;
+    string_t key;
+    char key_tmp_buf[HTTP_SP_URL_LEN_MAX];
+
+    cache_rule = cache_rule_get_rule(g_sc_cache_rule_ctx, url);
+    if (cache_rule == NULL) {
+        sc_dbg("Not find cache rule: %*s", url->len, url->data);
+        goto out;
+    }
+
+    key.data = key_tmp_buf;
+    key.len = HTTP_SP_URL_LEN_MAX;
+    if (cache_rule_url2local_key(url, cache_rule, &key) != 0) {
+        sc_dbg("Key generate failed: %*s", url->len, url->data);
+        goto out;
+    }
+
+    ret = sc_res_find_by_key(&g_sc_res_retrieving_list.list, &key);
+
+out:
     return ret;
 }
 
@@ -133,11 +173,21 @@ static void sc_res_load_url(string_t *url)
     char file_buf[HTTP_SP_URL_LEN_MAX + HTTP_LOCAL_FILE_ROOT_MAX];
     int ret;
     struct stat file_stat;
-    sc_res_info_t *ri;
+    sc_res_info_t *ri, *ri_already = NULL;
+    string_t key_str;
+    char key_buf[HTTP_SP_URL_LEN_MAX];
 
     rule = cache_rule_get_rule(g_sc_cache_rule_ctx, url);
     if (rule == NULL) {
         sc_dbg("Not find rule: %*s", (int)(url->len), url->data);
+        return;
+    }
+
+    key_str.data = key_buf;
+    key_str.len = sizeof(key_buf);
+    ret = cache_rule_url2local_key(url, rule, &key_str);
+    if ((ret != 0) || (key_str.len >= HTTP_SP_KEY_LEN_MAX)) {
+        sc_dbg("Url to key failed: %*s", url->len, url->data);
         return;
     }
 
@@ -155,6 +205,12 @@ static void sc_res_load_url(string_t *url)
         return;
     }
 
+    ri_already = sc_res_find_by_key(&g_sc_res_stored_list.list, &key_str);
+    if (ri_already != NULL) {
+        sc_dbg("URL already exists: %*s", ri_already->url.len, ri_already->url.data);
+        return;
+    }
+
     ri = sc_res_alloc();
     if (ri == NULL) {
         sc_dbg("Allocate ri failed.");
@@ -167,6 +223,10 @@ static void sc_res_load_url(string_t *url)
     memcpy(ri->url_buf, url->data, url->len);
     ri->url.data = ri->url_buf;
     ri->url.len = url->len;
+    memset(ri->key_buf, 0, HTTP_SP_KEY_LEN_MAX);
+    memcpy(ri->key_buf, key_str.data, key_str.len);
+    ri->key.data = ri->key_buf;
+    ri->key.len = key_str.len;
 
     list_add(&ri->list, &g_sc_res_stored_list.list);
     g_sc_res_stored_list.count++;
@@ -354,6 +414,9 @@ static u8 sc_spm_serve_down(http_sp2c_req_pkt_t *req)
     sc_res_info_t *ri;
     string_t url_str;
     u8 status = HTTP_SP_STATUS_OK;
+    cache_rule_t *cache_rule;
+    string_t key;
+    char key_buf[HTTP_SP_URL_LEN_MAX];
 
     url_str.data = (char *)req->url_data;
     url_str.len = req->url_len;
@@ -370,9 +433,24 @@ static u8 sc_spm_serve_down(http_sp2c_req_pkt_t *req)
         goto out;
     }
 
+    cache_rule = cache_rule_get_rule(g_sc_cache_rule_ctx, &url_str);
+    if (cache_rule == NULL) {
+        sc_dbg("Not find rule: %s", req->url_data);
+        status = HTTP_SP_STATUS_DEFAULT_ERROR;
+        goto out;
+    }
+    key.data = key_buf;
+    key.len = sizeof(key_buf);
+    ret = cache_rule_url2local_key(&url_str, cache_rule, &key);
+    if ((ret != 0) || (key.len >= HTTP_SP_KEY_LEN_MAX)) {
+        sc_dbg("Key generate failed: %s", req->url_data);
+        status = HTTP_SP_STATUS_DEFAULT_ERROR;
+        goto out;
+    }
+
     ri = sc_res_alloc();
     if (ri == NULL) {
-        sc_dbg("URL add failed: %s", req->url_data);
+        sc_dbg("URL allocate failed: %s", req->url_data);
         status = HTTP_SP_STATUS_DEFAULT_ERROR;
         goto out;
     }
@@ -382,6 +460,9 @@ static u8 sc_spm_serve_down(http_sp2c_req_pkt_t *req)
     memcpy(ri->url_buf, req->url_data, req->url_len + 1); /* 附加尾部的'\0' */
     ri->url.data = ri->url_buf;
     ri->url.len = req->url_len;
+    memcpy(ri->key_buf, key.data, key.len + 1);
+    ri->key.data = ri->key_buf;
+    ri->key.len = key.len;
 
     ret = sc_retrieve_inform(&ri->url);
     if (ret != 0) {
@@ -763,7 +844,7 @@ static int sc_load_local_resource()
     FILE *fp;
     char buf[HTTP_SP_URL_LEN_MAX + 5 + 1]; /* 多出 "@@@@+" 和'\0' */
     string_t url;
-    sc_res_info_t *ri;
+    sc_res_info_t *ri, *ri_next;
 
     fp = fopen(SC_WEB_SERVER_ROOT SC_RES_RECORD_FILE, "r");
     if (fp == NULL) {
@@ -790,7 +871,7 @@ static int sc_load_local_resource()
 
     fclose(fp);
 
-    list_for_each_entry(ri, &g_sc_res_stored_list.list, list, sc_res_info_t) {
+    list_for_each_entry_safe(ri, ri_next, &g_sc_res_stored_list.list, list, sc_res_info_t) {
         /* 一次性通知所有stored列表中的url给设备 */
         if (sc_spm_add_url(0, ri->url_buf) != 0) {
             sc_dbg("Add url failed, un-chain from stored list: %s", ri->url_buf);
