@@ -109,7 +109,7 @@ typedef struct sc_res_file_s {
 
 #define sc_print(fmt, arg...) \
     do { \
-        fprintf(stdout, "[PRT]: " fmt "\n", ##arg); \
+        fprintf(stdout, "*INFO*: " fmt "\n", ##arg); \
     } while (0)
 
 #endif /* __SNOOPING_CLIENT_H__ */

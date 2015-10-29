@@ -353,7 +353,7 @@ static int sc_spm_add_url(u32 sid, char *url)
     int ret;
 
     ret = sc_spm_do_action(HTTP_C2SP_ACTION_ADD, sid, url);
-    sc_dbg("%120s", url);
+    sc_dbg("%-120s", url);
 
     return ret;
 }
@@ -473,8 +473,6 @@ static u8 sc_spm_serve_down(http_sp2c_req_pkt_t *req)
 
     list_add_tail(&ri->list, &g_sc_res_retrieving_list.list);
     g_sc_res_retrieving_list.count++;
-
-    sc_print("Inform retrieving success: %s", req->url_data);
 
 out:
     return status;
@@ -686,7 +684,7 @@ static int sc_retrieve_download(string_t *url, string_t *file)
     }
     speed = speed / 1000;
 
-    sc_print("Success download @ %.2fKB/s: %s", speed, url_buf);
+    sc_print("Success download @ %.2fKB/s: %s", speed, file_buf);
     ret = 1;
 
 out3:
@@ -718,7 +716,6 @@ static void sc_retrieve_process(string_t *url, string_t *file)
     success = sc_retrieve_download(url, file);
 
     if (success) {
-        sc_dbg("download success.");
         sc_retrieve_ret_result(url, 1);
     } else {
         sc_dbg("download failed.");
@@ -972,7 +969,6 @@ static int sc_exec_core_proc()
         work_read_fd_set = g_sc_master_read_fd_set;
 
         ready = select(g_sc_max_read_fd + 1, &work_read_fd_set, NULL, NULL, NULL);  /* ×èÈûÔÚÕâÀï */
-        sc_dbg("select ready: %d", ready);
 
         if (ready <= 0) {
             sc_dbg("select() failed.");
