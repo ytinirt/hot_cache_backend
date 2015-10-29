@@ -9,5 +9,9 @@ lib:
 	ar -r libcacherule.a cache_rule.o btree_trie.o cache_host.o
 	rm -f *.o
 
+androidlib:
+	arm-linux-androideabi-gcc -c cache_rule.c btree_trie.c cache_host.c
+	arm-linux-androideabi-ar -r libcacherule.a cache_rule.o btree_trie.o cache_host.o
+	rm -f *.o
 clean:
 	rm -f test *.o *.a
