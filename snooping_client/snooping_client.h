@@ -17,6 +17,7 @@
 #define SC_WEB_SERVER_ROOT          "/data/local/html/"
 #define SC_WEB_SERVER_ROOT_LEN      (sizeof(SC_WEB_SERVER_ROOT) - 1)
 #define SC_RES_RECORD_FILE          "http-cache.txt"
+#define SC_RES_RECORD_FILE_TMP      "http-cache.txt.tmp"
 
 typedef uint8_t  u8;
 typedef uint16_t u16;

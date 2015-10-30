@@ -8,7 +8,10 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <signal.h>
+#include <utime.h>
+#include <time.h>
 
 #include <curl/curl.h>
 
@@ -148,7 +151,13 @@ static sc_res_info_t *sc_res_alloc()
     return ri;
 }
 
-static int sc_res_record_url(string_t *url)
+static void sc_res_free(sc_res_info_t *ri)
+{
+    list_add_tail(&ri->list, &g_sc_res_free_list.list);
+    g_sc_res_free_list.count++;
+}
+
+static int sc_res_record_url(string_t *url, const int add)
 {
     FILE *fp;
     int ret = 0;
@@ -159,20 +168,25 @@ static int sc_res_record_url(string_t *url)
         return -1;
     }
 
-    fprintf(fp, "@@@@+%*s\r\n", (int)(url->len), url->data);
+    if (add) {
+        fprintf(fp, "@@@@+%*s\r\n", (int)(url->len), url->data);
+    } else {
+        fprintf(fp, "@@@@-%*s\r\n", (int)(url->len), url->data);
+    }
 
     fclose(fp);
 
     return ret;
 }
 
-static void sc_res_load_url(string_t *url)
+static void sc_res_load_url_add(string_t *url)
 {
     string_t file_str;
     cache_rule_t *rule;
     char file_buf[HTTP_SP_URL_LEN_MAX + HTTP_LOCAL_FILE_ROOT_MAX];
     int ret;
     struct stat file_stat;
+    struct utimbuf timebuf;
     sc_res_info_t *ri, *ri_already = NULL;
     string_t key_str;
     char key_buf[HTTP_SP_URL_LEN_MAX];
@@ -204,6 +218,16 @@ static void sc_res_load_url(string_t *url)
         sc_dbg("File not exists: %*s", (int)(url->len), url->data);
         return;
     }
+    /* 仅更新加载资源的【访问时间】，用于后面的资源过期统计 */
+    timebuf.actime = time(NULL);
+    if (timebuf.actime == ((time_t)-1)) {
+        sc_dbg("Warning: time() failed");
+    } else {
+        timebuf.modtime = file_stat.st_mtime;
+        if (utime(file_buf, &timebuf) != 0) {
+            sc_dbg("Warning: update access time failed: %s", file_buf);
+        }
+    }
 
     ri_already = sc_res_find_by_key(&g_sc_res_stored_list.list, &key_str);
     if (ri_already != NULL) {
@@ -234,10 +258,20 @@ static void sc_res_load_url(string_t *url)
     return;
 }
 
-static void sc_res_free(sc_res_info_t *ri)
+static void sc_res_load_url_del(string_t *url)
 {
-    list_add_tail(&ri->list, &g_sc_res_free_list.list);
-    g_sc_res_free_list.count++;
+    sc_res_info_t *ri;
+
+    ri = sc_res_find_stored(url);
+    if (ri == NULL) {
+        return;
+    }
+
+    list_del_init(&ri->list);
+    g_sc_res_stored_list.count--;
+    sc_res_free(ri);
+
+    return;
 }
 
 static int sc_res_init(int total)
@@ -363,7 +397,7 @@ static int sc_spm_del_url(u32 sid, char *url)
     int ret;
 
     ret = sc_spm_do_action(HTTP_C2SP_ACTION_DELETE, sid, url);
-    sc_dbg("%120s", url);
+    sc_dbg("%-120s", url);
 
     return ret;
 }
@@ -808,7 +842,7 @@ static void sc_retrieve_handle(const int sockfd)
         goto un_chain;
     }
 
-    ret = sc_res_record_url(&url);
+    ret = sc_res_record_url(&url, 1);
     if (ret != 0) {
         sc_dbg("Record url failed: %*s", (int)(url.len), url.data);
     }
@@ -842,6 +876,7 @@ static int sc_load_local_resource()
     char buf[HTTP_SP_URL_LEN_MAX + 5 + 1]; /* 多出 "@@@@+" 和'\0' */
     string_t url;
     sc_res_info_t *ri, *ri_next;
+    int add = 0;
 
     fp = fopen(SC_WEB_SERVER_ROOT SC_RES_RECORD_FILE, "r");
     if (fp == NULL) {
@@ -850,7 +885,11 @@ static int sc_load_local_resource()
     }
 
     while (fgets(buf, sizeof(buf), fp) != NULL) {
-        if (strncmp(buf, "@@@@+", 5) != 0) {
+        if (strncmp(buf, "@@@@+", 5) == 0) {
+            add = 1;
+        } else if (strncmp(buf, "@@@@-", 5) == 0) {
+            add = 0;
+        } else {
             sc_dbg("Wrong format: %s", buf);
             continue;
         }
@@ -863,10 +902,24 @@ static int sc_load_local_resource()
             continue;
         }
 
-        sc_res_load_url(&url);
+        if (add) {
+            sc_res_load_url_add(&url);
+        } else {
+            sc_res_load_url_del(&url);
+        }
     }
 
     fclose(fp);
+
+    if (rename(SC_WEB_SERVER_ROOT SC_RES_RECORD_FILE, SC_WEB_SERVER_ROOT SC_RES_RECORD_FILE_TMP) != 0) {
+        sc_dbg("rename() failed");
+        return -1;
+    }
+    list_for_each_entry(ri, &g_sc_res_stored_list.list, list, sc_res_info_t) {
+        /* 将现存的所有资源url保存到文件中 */
+        sc_res_record_url(&ri->url, 1);
+    }
+    remove(SC_WEB_SERVER_ROOT SC_RES_RECORD_FILE_TMP);
 
     list_for_each_entry_safe(ri, ri_next, &g_sc_res_stored_list.list, list, sc_res_info_t) {
         /* 一次性通知所有stored列表中的url给设备 */
@@ -960,19 +1013,187 @@ static int sc_uninit_listen_sockfd()
     return err;
 }
 
+static int sc_calc_space_percent(const char *path)
+{
+    struct statfs fs_stat;
+    unsigned long used, total;
+    int ret = 0;
+
+    memset(&fs_stat, 0, sizeof(fs_stat));
+    if (statfs(path, &fs_stat) != 0) {
+        sc_dbg("statfs() call failed: %s", path);
+        goto out;
+    }
+
+    total = fs_stat.f_blocks;
+    used = total - fs_stat.f_bfree;
+    ret = used / (total / 100);
+
+out:
+    return ret;
+}
+
+static int sc_calc_gc_level(int percent, int threshold)
+{
+    int ret = -1;
+
+    if (threshold <= 0 || threshold >= 100) {
+        goto out;
+    }
+    if (percent < threshold) {
+        goto out;
+    }
+
+    if (threshold <= 40) {
+        ret = (percent / threshold) - 1;
+    } else {
+        ret = (percent / threshold) + 1;
+    }
+
+    if (ret > 10) {
+        ret = 10;
+    }
+
+out:
+    return ret;
+}
+
+static unsigned long sc_clean_space_do(sc_res_info_t *ri, unsigned long expire_time)
+{
+    unsigned long ret = 0, bytes;
+    struct stat statbuf;
+    cache_rule_t *rule;
+    string_t file_str;
+    char file_buf[HTTP_SP_URL_LEN_MAX + HTTP_LOCAL_FILE_ROOT_MAX];
+    time_t currtime;
+
+    rule = cache_rule_get_rule(g_sc_cache_rule_ctx, &ri->url);
+    if (rule == NULL) {
+        sc_dbg("Not find rule: %s", ri->url_buf);
+        goto out;
+    }
+
+    memcpy(file_buf, SC_WEB_SERVER_ROOT, SC_WEB_SERVER_ROOT_LEN);
+    file_str.data = file_buf + SC_WEB_SERVER_ROOT_LEN;
+    file_str.len = sizeof(file_buf) - SC_WEB_SERVER_ROOT_LEN;
+    if (cache_rule_url2local_file(&ri->url, rule, &file_str) != 0) {
+        sc_dbg("URL to local filename failed: %s", ri->url_buf);
+        goto out;
+    }
+
+    if (stat(file_buf, &statbuf) != 0) {
+        sc_dbg("stat() failed: %s", file_buf);
+        goto out;
+    }
+
+    currtime = time(NULL);
+    if (currtime == ((time_t)-1)) {
+        sc_dbg("time() failed: %s", file_buf);
+        goto out;
+    }
+    if (currtime <= (statbuf.st_atime + expire_time)) {
+        /* 还未过期 */
+        goto out;
+    }
+
+    sc_dbg("File expired, atime %s - %s", ctime(&statbuf.st_atime), file_buf);
+
+    /* 通知SP删除对应资源 */
+    if (sc_spm_del_url(ri->sid, ri->url_buf) != 0) {
+        sc_dbg("Inform SP del url failed: %s", ri->url_buf);
+        goto out;
+    }
+
+    bytes = statbuf.st_size;
+    if (bytes < 1024) {
+        ret = 1;
+    } else {
+        ret = bytes >> 10;
+    }
+    if (remove(file_buf) != 0) {
+        sc_dbg("remove() failed: %s", file_buf);
+    }
+
+out:
+    return ret;
+}
+
+static unsigned long sc_clean_space(unsigned long expire_time)
+{
+    unsigned long total_freed_space = 0, freed_space;
+    sc_res_info_t *ri, *ri_next;
+
+    list_for_each_entry_safe(ri, ri_next, &g_sc_res_stored_list.list, list, sc_res_info_t) {
+        freed_space = sc_clean_space_do(ri, expire_time);
+        if (freed_space == 0) {
+            /* 资源没有被释放 */
+            continue;
+        }
+
+        /* 将ri从stored的链表上卸下 */
+        list_del_init(&ri->list);
+        g_sc_res_stored_list.count--;
+        sc_res_record_url(&ri->url, 0);
+        sc_res_free(ri);
+
+        total_freed_space += freed_space;
+    }
+
+    return total_freed_space;
+}
+
+static void sc_mgmt_clean_space()
+{
+    int percent, gc_level;
+    unsigned long expire_time; /* 秒为单位 */
+    unsigned long freed_space; /* KB为单位 */
+
+    percent = sc_calc_space_percent(SC_WEB_SERVER_ROOT);
+    gc_level = sc_calc_gc_level(percent, 30);
+    if (gc_level < 0) {
+        return;
+    }
+
+    expire_time = 60 * 60 * 24; /* expire_time以秒为单位，这里是1天 */
+    expire_time = expire_time >> gc_level;
+
+    sc_dbg("Percent %d%%, GC level %d, expire time %u: %s", percent, gc_level, expire_time, SC_WEB_SERVER_ROOT);
+
+    freed_space = sc_clean_space(expire_time);
+    sc_print("--- Freed %uKB space ---", freed_space);
+}
+
+static void sc_mgmt_update_resources()
+{
+
+}
+
+static void sc_mgmt()
+{
+    sc_mgmt_clean_space();
+    sc_mgmt_update_resources();
+}
+
 static int sc_exec_core_proc()
 {
     fd_set work_read_fd_set;
+    struct timeval tv;
     int ready, nready;
 
     while (1) {
         work_read_fd_set = g_sc_master_read_fd_set;
+        tv.tv_sec = 10;
+        tv.tv_usec = 0;
 
-        ready = select(g_sc_max_read_fd + 1, &work_read_fd_set, NULL, NULL, NULL);  /* 阻塞在这里 */
+        ready = select(g_sc_max_read_fd + 1, &work_read_fd_set, NULL, NULL, &tv);
 
-        if (ready <= 0) {
+        if (ready < 0) {
             sc_dbg("select() failed.");
             return -1;
+        }
+        if (ready == 0) {
+            sc_mgmt();
+            continue;
         }
 
         nready = 0;
