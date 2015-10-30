@@ -58,7 +58,7 @@ typedef struct http_c2sp_res_pkt_s{
 
 #define HTTP_SP2C_ACTION_PARSE 1
 #define HTTP_SP2C_ACTION_DOWN 2
-#define HTTP_SP2C_ACTION_GETNEXT 3
+#define HTTP_SP2C_ACTION_PULL 3
 typedef struct http_sp2c_req_pkt_s
 {
     u32 session_id;

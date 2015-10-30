@@ -517,6 +517,15 @@ errout1:
     return status;
 }
 
+static void sc_spm_serve_pull()
+{
+    sc_res_info_t *ri;
+
+    list_for_each_entry(ri, &g_sc_res_stored_list.list, list, sc_res_info_t) {
+        sc_spm_add_url(0, ri->url_buf);
+    }
+}
+
 static void sc_spm_serve(const int sockfd)
 {
     int nrecv;
@@ -524,7 +533,7 @@ static void sc_spm_serve(const int sockfd)
     socklen_t salen;
     char buf[SC_SPM_SND_RCV_BUFLEN];
     http_sp2c_req_pkt_t *sp2c_req;
-    u8 status = HTTP_SP_STATUS_DEFAULT_ERROR;
+    u8 status = HTTP_SP_STATUS_OK;
 #if SNOOPING_CLIENT_DEBUG
     struct sockaddr_in *in_sa;
     char ip_addr[SC_MAX_HOST_NAME_LEN];
@@ -545,32 +554,38 @@ static void sc_spm_serve(const int sockfd)
 
     if (nrecv < sizeof(http_sp2c_req_pkt_t)) {
         sc_dbg("recvfrom invalid %d bytes, less than %u", nrecv, sizeof(http_sp2c_req_pkt_t));
-        goto reply;
+        goto err_reply;
     }
 
     sp2c_req = (http_sp2c_req_pkt_t *)buf;
     sp2c_req->url_len = ntohs(sp2c_req->url_len);
     if (sp2c_req->url_len >= HTTP_SP_URL_LEN_MAX) {
         sc_dbg("sp2c_req's url (%u) is longer than %d", sp2c_req->url_len, HTTP_SP_URL_LEN_MAX);
-        goto reply;
+        goto err_reply;
     }
 
     switch (sp2c_req->sp2c_action) {
     case HTTP_SP2C_ACTION_PARSE:
         status = sc_spm_serve_parse(sp2c_req);
+        sc_spm_response(sockfd, &sa, salen, sp2c_req, status);
         break;
     case HTTP_SP2C_ACTION_DOWN:
         status = sc_spm_serve_down(sp2c_req);
+        sc_spm_response(sockfd, &sa, salen, sp2c_req, status);
         break;
-    case HTTP_SP2C_ACTION_GETNEXT:
-        sc_dbg("HTTP_SP2C_ACTION_GETNEXT %u not support now", sp2c_req->sp2c_action);
+    case HTTP_SP2C_ACTION_PULL:
+        /* 收到PULL后，不需要回复，直接处理即可 */
+        sc_spm_serve_pull();
         break;
     default:
+        /* 错误的action，不回复，不理会SP */
         sc_dbg("unknown sp2c_action %u", sp2c_req->sp2c_action);
     }
 
-reply:
-    sc_spm_response(sockfd, &sa, salen, sp2c_req, status);
+    return;
+
+err_reply:
+    sc_spm_response(sockfd, &sa, salen, sp2c_req, HTTP_SP_STATUS_DEFAULT_ERROR);
 
     return;
 }
