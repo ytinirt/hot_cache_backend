@@ -139,8 +139,9 @@ static sc_res_info_t *sc_res_alloc()
 
     if (!list_empty(&g_sc_res_free_list.list)) {
         plist = g_sc_res_free_list.list.next;
-        list_del_init(plist);
+        list_del(plist);
         ri = list_entry(plist, sc_res_info_t, list);
+        memset(ri, 0, sizeof(sc_res_info_t));
         g_sc_res_free_list.count--;
     }
 
@@ -241,14 +242,12 @@ static void sc_res_load_url_add(string_t *url, unsigned long exp_time, unsigned 
         return;
     }
 
-    ri->exp_time = exp_time;
-    ri->size = size;
-    ri->sid = 0;
-    memset(ri->url_buf, 0, HTTP_SP_URL_LEN_MAX);
+    ri->exp_time = (time_t)exp_time;
+    ri->size = (off_t)size;
+    ri->rule = rule;
     memcpy(ri->url_buf, url->data, url->len);
     ri->url.data = ri->url_buf;
     ri->url.len = url->len;
-    memset(ri->key_buf, 0, HTTP_SP_KEY_LEN_MAX);
     memcpy(ri->key_buf, key_str.data, key_str.len);
     ri->key.data = ri->key_buf;
     ri->key.len = key_str.len;
@@ -490,13 +489,12 @@ static u8 sc_spm_serve_down(http_sp2c_req_pkt_t *req)
         goto out;
     }
 
-    ri->exp_time = 0;
-    ri->size = 0;
     ri->sid = req->session_id;
-    memcpy(ri->url_buf, req->url_data, req->url_len + 1); /* 附加尾部的'\0' */
+    ri->rule = cache_rule;
+    memcpy(ri->url_buf, req->url_data, req->url_len);
     ri->url.data = ri->url_buf;
     ri->url.len = req->url_len;
-    memcpy(ri->key_buf, key.data, key.len + 1);
+    memcpy(ri->key_buf, key.data, key.len);
     ri->key.data = ri->key_buf;
     ri->key.len = key.len;
 
@@ -1240,8 +1238,8 @@ static void sc_retrieve_handle(const int sockfd)
         goto un_chain;
     }
 
-    ri->exp_time = exp_time;
-    ri->size = size;
+    ri->exp_time = (time_t)exp_time;
+    ri->size = (off_t)size;
 
     ret = sc_res_record_url(ri, 1);
     if (ret != 0) {
@@ -1471,21 +1469,14 @@ static unsigned long sc_clean_space_do(sc_res_info_t *ri, unsigned long expire_t
 {
     unsigned long ret = 0, bytes;
     struct stat statbuf;
-    cache_rule_t *rule;
     string_t file_str;
     char file_buf[HTTP_SP_URL_LEN_MAX + HTTP_LOCAL_FILE_ROOT_MAX];
     time_t currtime;
 
-    rule = cache_rule_get_rule(g_sc_cache_rule_ctx, &ri->url);
-    if (rule == NULL) {
-        sc_dbg("Not find rule: %s", ri->url_buf);
-        goto out;
-    }
-
     memcpy(file_buf, SC_WEB_SERVER_ROOT, SC_WEB_SERVER_ROOT_LEN);
     file_str.data = file_buf + SC_WEB_SERVER_ROOT_LEN;
     file_str.len = sizeof(file_buf) - SC_WEB_SERVER_ROOT_LEN;
-    if (cache_rule_url2local_file(&ri->url, rule, &file_str) != 0) {
+    if (cache_rule_url2local_file(&ri->url, ri->rule, &file_str) != 0) {
         sc_dbg("URL to local filename failed: %s", ri->url_buf);
         goto out;
     }
@@ -1577,7 +1568,6 @@ static void sc_mgmt_update_resources()
 {
     sc_res_info_t *ri, *ri_next;
     time_t current_time;
-    cache_rule_t *rule;
     string_t file_str;
     char file_buf[HTTP_SP_URL_LEN_MAX + HTTP_LOCAL_FILE_ROOT_MAX];
 
@@ -1596,15 +1586,10 @@ static void sc_mgmt_update_resources()
 
         if (ri->exp_time <= current_time) {
             /* 资源过期 */
-            rule = cache_rule_get_rule(g_sc_cache_rule_ctx, &ri->url);
-            if (rule == NULL) {
-                sc_dbg("Not find rule: %s", ri->url_buf);
-                continue;
-            }
             memcpy(file_buf, SC_WEB_SERVER_ROOT, SC_WEB_SERVER_ROOT_LEN);
             file_str.data = file_buf + SC_WEB_SERVER_ROOT_LEN;
             file_str.len = sizeof(file_buf) - SC_WEB_SERVER_ROOT_LEN;
-            if (cache_rule_url2local_file(&ri->url, rule, &file_str) != 0) {
+            if (cache_rule_url2local_file(&ri->url, ri->rule, &file_str) != 0) {
                 sc_dbg("URL to local filename failed: %s", ri->url_buf);
                 continue;
             }

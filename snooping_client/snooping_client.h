@@ -80,11 +80,12 @@ typedef struct http_sp2c_res_pkt_s {
 
 typedef struct sc_res_info_s {
     struct list_head list;
-
-    unsigned long exp_time; /* 过期时间，以自Epoch开始计算，秒为单位 */
-    unsigned long size; /* 以byte为单位 */
-
     u32 sid;
+
+    time_t exp_time;
+    off_t size;
+
+    cache_rule_t *rule;
     string_t url;
     string_t key;
     char url_buf[HTTP_SP_URL_LEN_MAX];
