@@ -1620,7 +1620,7 @@ static void sc_mgmt_update_resources()
 static void sc_mgmt()
 {
     sc_mgmt_clean_space();
-    sc_mgmt_update_resources();
+    //sc_mgmt_update_resources();
 }
 
 static int sc_exec_core_proc()
