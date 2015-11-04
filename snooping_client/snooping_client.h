@@ -81,7 +81,9 @@ typedef struct http_sp2c_res_pkt_s {
 typedef struct sc_res_info_s {
     struct list_head list;
 
-    unsigned long flags;
+    unsigned long exp_time; /* 过期时间，以自Epoch开始计算，秒为单位 */
+    unsigned long size; /* 以byte为单位 */
+
     u32 sid;
     string_t url;
     string_t key;
@@ -97,6 +99,10 @@ typedef struct sc_res_list_s {
 typedef struct sc_res_file_s {
     char *path;
     FILE *fp;
+    unsigned long size;
+    unsigned long last_mod;
+    unsigned long max_age;
+    unsigned long expires;
 } sc_res_file_t;
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))

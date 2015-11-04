@@ -157,7 +157,7 @@ static void sc_res_free(sc_res_info_t *ri)
     g_sc_res_free_list.count++;
 }
 
-static int sc_res_record_url(string_t *url, const int add)
+static int sc_res_record_url(sc_res_info_t *ri, const int add)
 {
     FILE *fp;
     int ret = 0;
@@ -169,9 +169,9 @@ static int sc_res_record_url(string_t *url, const int add)
     }
 
     if (add) {
-        fprintf(fp, "@@@@+%*s\r\n", (int)(url->len), url->data);
+        fprintf(fp, "A %lu %lu %s\r\n", ri->exp_time, ri->size, ri->url_buf);
     } else {
-        fprintf(fp, "@@@@-%*s\r\n", (int)(url->len), url->data);
+        fprintf(fp, "D 0 0 %s\r\n", ri->url_buf);
     }
 
     fclose(fp);
@@ -179,7 +179,7 @@ static int sc_res_record_url(string_t *url, const int add)
     return ret;
 }
 
-static void sc_res_load_url_add(string_t *url)
+static void sc_res_load_url_add(string_t *url, unsigned long exp_time, unsigned long size)
 {
     string_t file_str;
     cache_rule_t *rule;
@@ -241,7 +241,8 @@ static void sc_res_load_url_add(string_t *url)
         return;
     }
 
-    ri->flags = 0;
+    ri->exp_time = exp_time;
+    ri->size = size;
     ri->sid = 0;
     memset(ri->url_buf, 0, HTTP_SP_URL_LEN_MAX);
     memcpy(ri->url_buf, url->data, url->len);
@@ -489,7 +490,8 @@ static u8 sc_spm_serve_down(http_sp2c_req_pkt_t *req)
         goto out;
     }
 
-    ri->flags = 0;
+    ri->exp_time = 0;
+    ri->size = 0;
     ri->sid = req->session_id;
     memcpy(ri->url_buf, req->url_data, req->url_len + 1); /* 附加尾部的'\0' */
     ri->url.data = ri->url_buf;
@@ -626,7 +628,10 @@ static int sc_create_full_path(string_t *dir, unsigned int access)
     return err;
 }
 
-static void sc_retrieve_ret_result(string_t *url, int success)
+static void sc_retrieve_ret_result(string_t *url,
+                                   int success,
+                                   unsigned long exp_time,
+                                   unsigned long size)
 {
     int nsend;
     int sockfd;
@@ -645,12 +650,12 @@ static void sc_retrieve_ret_result(string_t *url, int success)
 
     memset(buf, 0, sizeof(buf));
     if (success) {
-        sprintf(buf, "S %*s", (int)(url->len), url->data);
+        sprintf(buf, "S %lu %lu %*s", exp_time, size, (int)(url->len), url->data);
     } else {
-        sprintf(buf, "F %*s", (int)(url->len), url->data);
+        sprintf(buf, "F %lu %lu %*s", exp_time, size, (int)(url->len), url->data);
     }
 
-    if ((nsend = sendto(sockfd, buf, url->len + 2, 0, (struct sockaddr *)&sa, salen)) < 0) {
+    if ((nsend = sendto(sockfd, buf, strlen(buf), 0, (struct sockaddr *)&sa, salen)) < 0) {
         sc_dbg("sendto failed: %s", strerror(errno));
         goto out;
     }
@@ -680,7 +685,346 @@ static size_t sc_retrieve_write(void *buffer, size_t size, size_t nmemb, void *s
     return fwrite(buffer, size, nmemb, f->fp);
 }
 
-static int sc_retrieve_download(string_t *url, string_t *file)
+static unsigned int  mday[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+static time_t sc_retrieve_parse_time(char *value, size_t len)
+{
+    char *p, *end;
+    int month;
+    unsigned int day, year, hour, min, sec;
+    uint64_t time;
+    enum {
+        no = 0,
+        rfc822,   /* Tue, 10 Nov 2002 23:50:13   */
+        rfc850,   /* Tuesday, 10-Dec-02 23:50:13 */
+        isoc      /* Tue Dec 10 23:50:13 2002    */
+    } fmt;
+
+    fmt = 0;
+    end = value + len;
+
+    day = 32;
+    year = 2038;
+
+    for (p = value; p < end; p++) {
+        if (*p == ',') {
+            break;
+        }
+
+        if (*p == ' ') {
+            fmt = isoc;
+            break;
+        }
+    }
+
+    for (p++; p < end; p++)
+        if (*p != ' ') {
+            break;
+        }
+
+    if (end - p < 18) {
+        return -1;
+        }
+
+    if (fmt != isoc) {
+        if (*p < '0' || *p > '9' || *(p + 1) < '0' || *(p + 1) > '9') {
+            return -1;
+        }
+
+        day = (*p - '0') * 10 + *(p + 1) - '0';
+        p += 2;
+
+        if (*p == ' ') {
+            if (end - p < 18) {
+                return -1;
+            }
+            fmt = rfc822;
+
+        } else if (*p == '-') {
+            fmt = rfc850;
+
+        } else {
+            return -1;
+        }
+
+        p++;
+    }
+
+    switch (*p) {
+
+    case 'J':
+        month = *(p + 1) == 'a' ? 0 : *(p + 2) == 'n' ? 5 : 6;
+        break;
+
+    case 'F':
+        month = 1;
+        break;
+
+    case 'M':
+        month = *(p + 2) == 'r' ? 2 : 4;
+        break;
+
+    case 'A':
+        month = *(p + 1) == 'p' ? 3 : 7;
+        break;
+
+    case 'S':
+        month = 8;
+        break;
+
+    case 'O':
+        month = 9;
+        break;
+
+    case 'N':
+        month = 10;
+        break;
+
+    case 'D':
+        month = 11;
+        break;
+
+    default:
+        return -1;
+    }
+
+    p += 3;
+
+    if ((fmt == rfc822 && *p != ' ') || (fmt == rfc850 && *p != '-')) {
+        return -1;
+    }
+
+    p++;
+
+    if (fmt == rfc822) {
+        if (*p < '0' || *p > '9' || *(p + 1) < '0' || *(p + 1) > '9'
+            || *(p + 2) < '0' || *(p + 2) > '9'
+            || *(p + 3) < '0' || *(p + 3) > '9')
+        {
+            return -1;
+        }
+
+        year = (*p - '0') * 1000 + (*(p + 1) - '0') * 100
+               + (*(p + 2) - '0') * 10 + *(p + 3) - '0';
+        p += 4;
+
+    } else if (fmt == rfc850) {
+        if (*p < '0' || *p > '9' || *(p + 1) < '0' || *(p + 1) > '9') {
+            return -1;
+        }
+
+        year = (*p - '0') * 10 + *(p + 1) - '0';
+        year += (year < 70) ? 2000 : 1900;
+        p += 2;
+    }
+
+    if (fmt == isoc) {
+        if (*p == ' ') {
+            p++;
+        }
+
+        if (*p < '0' || *p > '9') {
+            return -1;
+        }
+
+        day = *p++ - '0';
+
+        if (*p != ' ') {
+            if (*p < '0' || *p > '9') {
+                return -1;
+            }
+
+            day = day * 10 + *p++ - '0';
+        }
+
+        if (end - p < 14) {
+            return -1;
+        }
+    }
+
+    if (*p++ != ' ') {
+        return -1;
+    }
+
+    if (*p < '0' || *p > '9' || *(p + 1) < '0' || *(p + 1) > '9') {
+        return -1;
+    }
+
+    hour = (*p - '0') * 10 + *(p + 1) - '0';
+    p += 2;
+
+    if (*p++ != ':') {
+        return -1;
+    }
+
+    if (*p < '0' || *p > '9' || *(p + 1) < '0' || *(p + 1) > '9') {
+        return -1;
+    }
+
+    min = (*p - '0') * 10 + *(p + 1) - '0';
+    p += 2;
+
+    if (*p++ != ':') {
+        return -1;
+    }
+
+    if (*p < '0' || *p > '9' || *(p + 1) < '0' || *(p + 1) > '9') {
+        return -1;
+    }
+
+    sec = (*p - '0') * 10 + *(p + 1) - '0';
+
+    if (fmt == isoc) {
+        p += 2;
+
+        if (*p++ != ' ') {
+            return -1;
+        }
+
+        if (*p < '0' || *p > '9' || *(p + 1) < '0' || *(p + 1) > '9'
+            || *(p + 2) < '0' || *(p + 2) > '9'
+            || *(p + 3) < '0' || *(p + 3) > '9')
+        {
+            return -1;
+        }
+
+        year = (*p - '0') * 1000 + (*(p + 1) - '0') * 100
+               + (*(p + 2) - '0') * 10 + *(p + 3) - '0';
+    }
+
+    if (hour > 23 || min > 59 || sec > 59) {
+         return -1;
+    }
+
+    if (day == 29 && month == 1) {
+        if ((year & 3) || ((year % 100 == 0) && (year % 400) != 0)) {
+            return -1;
+        }
+
+    } else if (day > mday[month]) {
+        return -1;
+    }
+
+    /*
+     * shift new year to March 1 and start months from 1 (not 0),
+     * it is needed for Gauss' formula
+     */
+
+    if (--month <= 0) {
+        month += 12;
+        year -= 1;
+    }
+
+    /* Gauss' formula for Gregorian days since March 1, 1 BC */
+
+    time = (uint64_t) (
+            /* days in years including leap years since March 1, 1 BC */
+
+            365 * year + year / 4 - year / 100 + year / 400
+
+            /* days before the month */
+
+            + 367 * month / 12 - 30
+
+            /* days before the day */
+
+            + day - 1
+
+            /*
+             * 719527 days were between March 1, 1 BC and March 1, 1970,
+             * 31 and 28 days were in January and February 1970
+             */
+
+            - 719527 + 31 + 28) * 86400 + hour * 3600 + min * 60 + sec;
+
+
+    if ((sizeof(time_t) <= 4) && (time > 0x7fffffff)) {
+        return -1;
+    }
+
+    return (time_t) time;
+}
+
+#define SC_HEADER_LINE_MAX_LEN 256
+static string_t expires_str = string_init("Expires: ");
+static string_t cache_control_str = string_init("Cache-Control: ");
+static string_t max_age_str = string_init("max-age=");
+static string_t last_modified_str = string_init("Last-Modified: ");
+static string_t content_length_str = string_init("Content-Length: ");
+static size_t sc_retrieve_parse_head(char *buffer, size_t size, size_t nitems, void *stream)
+{
+    sc_res_file_t *f;
+    char buf[SC_HEADER_LINE_MAX_LEN], *max_age, *end;
+    size_t slen;
+    time_t time;
+
+    if (stream == NULL) {
+        goto err_out;
+    }
+
+    f = (sc_res_file_t *)stream;
+
+    memset(buf, 0, sizeof(buf));
+    if (strncmp(buffer, expires_str.data, expires_str.len) == 0) {
+        if ((size * nitems) >= SC_HEADER_LINE_MAX_LEN) {
+            goto err_out;
+        }
+        buffer += expires_str.len;
+        slen = strlen(buffer);
+        memcpy(buf, buffer, slen);
+        time = sc_retrieve_parse_time(buf, slen);
+        if (time == -1) {
+            goto err_out;
+        }
+        f->expires = time;
+    } else if (strncmp(buffer, cache_control_str.data, cache_control_str.len) == 0) {
+        if ((size * nitems) >= SC_HEADER_LINE_MAX_LEN) {
+            goto err_out;
+        }
+        buffer += cache_control_str.len;
+        slen = strlen(buffer);
+        memcpy(buf, buffer, slen);
+        max_age = strstr(buf, max_age_str.data);
+        if (max_age == NULL) {
+            goto err_out;
+        }
+        max_age += max_age_str.len;
+        for (end = max_age; isdigit(*end); end++) {
+            ;
+        }
+        *end = '\0';
+        f->max_age = strtoul(max_age, NULL, 10);
+        if (f->max_age == ULONG_MAX) {
+            goto err_out;
+        }
+    } else if (strncmp(buffer, last_modified_str.data, last_modified_str.len) == 0) {
+        if ((size * nitems) >= SC_HEADER_LINE_MAX_LEN) {
+            goto err_out;
+        }
+        buffer += last_modified_str.len;
+        slen = strlen(buffer);
+        memcpy(buf, buffer, slen);
+        time = sc_retrieve_parse_time(buf, slen);
+        if (time == -1) {
+            goto err_out;
+        }
+        f->last_mod = time;
+    } else if (strncmp(buffer, content_length_str.data, content_length_str.len) == 0) {
+        if (sscanf(buffer, "Content-Length: %lu", &f->size) != 1) {
+            goto err_out;
+        }
+    }
+
+    return (size * nitems);
+
+err_out:
+    sc_dbg("Parse header line failed: %s", buffer);
+    return -1;
+}
+
+static int sc_retrieve_download(string_t *url,
+                                string_t *file,
+                                unsigned long *exp_time,
+                                unsigned long *size)
 {
     char url_buf[HTTP_SP_URL_LEN_MAX + 1];
     char file_buf[HTTP_SP_URL_LEN_MAX + HTTP_LOCAL_FILE_ROOT_MAX + 1];
@@ -696,6 +1040,7 @@ static int sc_retrieve_download(string_t *url, string_t *file)
     memcpy(file_buf, file->data, file->len);
     file_buf[file->len] = '\0';
 
+    memset(&f, 0, sizeof(f));
     f.path = file_buf;
     f.fp = NULL;
 
@@ -709,6 +1054,8 @@ static int sc_retrieve_download(string_t *url, string_t *file)
     curl_easy_setopt(curl, CURLOPT_URL, url_buf);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sc_retrieve_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &f);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, sc_retrieve_parse_head);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &f);
 
     rc = curl_easy_perform(curl);
     if (rc != CURLE_OK) {
@@ -734,6 +1081,25 @@ static int sc_retrieve_download(string_t *url, string_t *file)
     speed = speed / 1000;
 
     sc_print("Success download @ %.2fKB/s: %s", speed, file_buf);
+    sc_print("Last modified %lu, expires %lu, max_age %lu, size %lu",
+                f.last_mod,
+                f.expires,
+                f.max_age,
+                f.size);
+    if (f.last_mod != 0 && f.max_age != 0) {
+        *exp_time = f.last_mod + f.max_age;
+    } else if (f.expires != 0) {
+        *exp_time = f.expires;
+    } else {
+        sc_dbg("Missing expire info: %s", file_buf);
+        *exp_time = 0;
+    }
+    if (f.size != 0) {
+        *size = f.size;
+    } else {
+        sc_dbg("Missing size info: %s", file_buf);
+        *size = 0;
+    }
     ret = 1;
 
 out3:
@@ -757,18 +1123,19 @@ out:
 static void sc_retrieve_process(string_t *url, string_t *file)
 {
     int success = 0;
+    unsigned long exp_time = 0, size = 0;
 
     sc_print("Inform  ---\n\tURL:  %*s\n\tFile: %*s",
                     (int)(url->len), url->data, (int)(file->len), file->data);
     sc_create_full_path(file, 0777);
 
-    success = sc_retrieve_download(url, file);
+    success = sc_retrieve_download(url, file, &exp_time, &size);
 
     if (success) {
-        sc_retrieve_ret_result(url, 1);
+        sc_retrieve_ret_result(url, 1, exp_time, size);
     } else {
         sc_dbg("download failed.");
-        sc_retrieve_ret_result(url, 0);
+        sc_retrieve_ret_result(url, 0, exp_time, size);
     }
 }
 
@@ -817,9 +1184,11 @@ static void sc_retrieve_handle(const int sockfd)
     int nrecv, success, ret;
     struct sockaddr sa;
     socklen_t salen;
-    char buf[SC_SPM_SND_RCV_BUFLEN];
+    char buf[SC_SPM_SND_RCV_BUFLEN], *pbuf;
     string_t url;
     sc_res_info_t *ri;
+    unsigned long exp_time, size;
+    char *end;
 
     salen = sizeof(struct sockaddr);
     memset(&sa, 0, salen);
@@ -844,7 +1213,21 @@ static void sc_retrieve_handle(const int sockfd)
         return;
     }
 
-    url.data = buf + 2;
+    pbuf = buf + 2;
+    for (end = pbuf; isdigit(*end); end++) {
+        ;
+    }
+    *end = '\0';
+    exp_time = strtoul(pbuf, NULL, 10);
+    pbuf = end + 1;
+    for (end = pbuf; isdigit(*end); end++) {
+        ;
+    }
+    *end = '\0';
+    size = strtoul(pbuf, NULL, 10);
+    pbuf = end + 1;
+
+    url.data = pbuf;
     url.len = strlen(url.data);
     ri = sc_res_find_retrieving(&url);
     if (ri == NULL) {
@@ -857,7 +1240,10 @@ static void sc_retrieve_handle(const int sockfd)
         goto un_chain;
     }
 
-    ret = sc_res_record_url(&url, 1);
+    ri->exp_time = exp_time;
+    ri->size = size;
+
+    ret = sc_res_record_url(ri, 1);
     if (ret != 0) {
         sc_dbg("Record url failed: %*s", (int)(url.len), url.data);
     }
@@ -888,10 +1274,12 @@ un_chain:
 static int sc_load_local_resource()
 {
     FILE *fp;
-    char buf[HTTP_SP_URL_LEN_MAX + 5 + 1]; /* 多出 "@@@@+" 和'\0' */
+    char *pbuf, buf[HTTP_SP_URL_LEN_MAX + 24 + 1]; /* 多出 "A x x " 和'\0' */
+    char url_buf[HTTP_SP_URL_LEN_MAX + 1];
     string_t url;
     sc_res_info_t *ri, *ri_next;
     int add = 0;
+    unsigned long exp_time, size;
 
     fp = fopen(SC_WEB_SERVER_ROOT SC_RES_RECORD_FILE, "r");
     if (fp == NULL) {
@@ -900,25 +1288,31 @@ static int sc_load_local_resource()
     }
 
     while (fgets(buf, sizeof(buf), fp) != NULL) {
-        if (strncmp(buf, "@@@@+", 5) == 0) {
+        if (buf[0] == 'A') {
             add = 1;
-        } else if (strncmp(buf, "@@@@-", 5) == 0) {
+        } else if (buf[0] == 'D') {
             add = 0;
         } else {
             sc_dbg("Wrong format: %s", buf);
             continue;
         }
+        pbuf = buf + 2;
+        if (sscanf(pbuf, "%lu %lu %s", &exp_time, &size, url_buf) != 3) {
+            sc_dbg("Get info failed: %s", pbuf);
+            continue;
+        }
 
-        url.data = buf + 5;
-        url.len = strlen(url.data) - 2;
-        url.data[url.len] = '\0';
-        if (url.len == HTTP_SP_URL_LEN_MAX) {
+        sc_dbg("%s %lu %lu %s", (add ? "Add" : "Del"), exp_time, size, url_buf);
+
+        url.data = url_buf;
+        url.len = strlen(url_buf);
+        if (url.len >= HTTP_SP_URL_LEN_MAX) {
             sc_dbg("URL too long: %*s", (int)(url.len), url.data);
             continue;
         }
 
         if (add) {
-            sc_res_load_url_add(&url);
+            sc_res_load_url_add(&url, exp_time, size);
         } else {
             sc_res_load_url_del(&url);
         }
@@ -932,7 +1326,7 @@ static int sc_load_local_resource()
     }
     list_for_each_entry(ri, &g_sc_res_stored_list.list, list, sc_res_info_t) {
         /* 将现存的所有资源url保存到文件中 */
-        sc_res_record_url(&ri->url, 1);
+        sc_res_record_url(ri, 1);
     }
     remove(SC_WEB_SERVER_ROOT SC_RES_RECORD_FILE_TMP);
 
@@ -1148,7 +1542,7 @@ static unsigned long sc_clean_space(unsigned long expire_time)
         /* 将ri从stored的链表上卸下 */
         list_del_init(&ri->list);
         g_sc_res_stored_list.count--;
-        sc_res_record_url(&ri->url, 0);
+        sc_res_record_url(ri, 0);
         sc_res_free(ri);
 
         total_freed_space += freed_space;
@@ -1172,15 +1566,70 @@ static void sc_mgmt_clean_space()
     expire_time = 60 * 60 * 24; /* expire_time以秒为单位，这里是1天 */
     expire_time = expire_time >> gc_level;
 
-    sc_dbg("Percent %d%%, GC level %d, expire time %u: %s", percent, gc_level, expire_time, SC_WEB_SERVER_ROOT);
+    sc_dbg("Percent %d%%, GC level %d, expire time %lu: %s", percent, gc_level, expire_time, SC_WEB_SERVER_ROOT);
 
     freed_space = sc_clean_space(expire_time);
-    sc_print("--- Freed %uKB space ---", freed_space);
+    sc_print("--- Freed %luKB space ---", freed_space);
 }
 
+#define SC_EXEC_CORE_PROC_TIMEOUT       10
 static void sc_mgmt_update_resources()
 {
+    sc_res_info_t *ri, *ri_next;
+    time_t current_time;
+    cache_rule_t *rule;
+    string_t file_str;
+    char file_buf[HTTP_SP_URL_LEN_MAX + HTTP_LOCAL_FILE_ROOT_MAX];
 
+    /* XXX TODO: 目前只做到对过期资源的删除，还未更新它的内容 */
+    current_time = time(NULL);
+    if (current_time == ((time_t)-1)) {
+        sc_dbg("time() get current time failed");
+        return;
+    }
+    current_time += SC_EXEC_CORE_PROC_TIMEOUT;
+    list_for_each_entry_safe(ri, ri_next, &g_sc_res_stored_list.list, list, sc_res_info_t) {
+        if (ri->exp_time == 0) {
+            /* 没有过期时间的限度 */
+            continue;
+        }
+
+        if (ri->exp_time <= current_time) {
+            /* 资源过期 */
+            rule = cache_rule_get_rule(g_sc_cache_rule_ctx, &ri->url);
+            if (rule == NULL) {
+                sc_dbg("Not find rule: %s", ri->url_buf);
+                continue;
+            }
+            memcpy(file_buf, SC_WEB_SERVER_ROOT, SC_WEB_SERVER_ROOT_LEN);
+            file_str.data = file_buf + SC_WEB_SERVER_ROOT_LEN;
+            file_str.len = sizeof(file_buf) - SC_WEB_SERVER_ROOT_LEN;
+            if (cache_rule_url2local_file(&ri->url, rule, &file_str) != 0) {
+                sc_dbg("URL to local filename failed: %s", ri->url_buf);
+                continue;
+            }
+
+            sc_dbg("File expired, curr %lu, exp %lu: %s", current_time, ri->exp_time, file_buf);
+
+            if (sc_spm_del_url(ri->sid, ri->url_buf) != 0) {
+                sc_dbg("Inform SP del url_failed: %s", ri->url_buf);
+                continue;
+            }
+
+            if (remove(file_buf) != 0) {
+                sc_dbg("remove() failed: %s", file_buf);
+            }
+
+            list_del_init(&ri->list);
+            g_sc_res_stored_list.count--;
+            sc_res_record_url(ri, 0);
+            sc_res_free(ri);
+
+            continue;
+        }
+    }
+
+    return;
 }
 
 static void sc_mgmt()
@@ -1197,7 +1646,7 @@ static int sc_exec_core_proc()
 
     while (1) {
         work_read_fd_set = g_sc_master_read_fd_set;
-        tv.tv_sec = 10;
+        tv.tv_sec = SC_EXEC_CORE_PROC_TIMEOUT;
         tv.tv_usec = 0;
 
         ready = select(g_sc_max_read_fd + 1, &work_read_fd_set, NULL, NULL, &tv);
