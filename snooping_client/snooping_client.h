@@ -27,6 +27,7 @@ typedef uint32_t u32;
 #define HTTP_SP_URL_MAX                     (32 * 1024)
 #define HTTP_SP_URL_LEN_MAX                 600 /* 包括'\0' */
 #define HTTP_SP_KEY_LEN_MAX                 256 /* 包括'\0' */
+#define HTTP_SP_COOKIE_LEN_MAX              256 /* 用于下载Apple APP */
 
 #define HTTP_LOCAL_FILE_ROOT_MAX 64
 
@@ -66,6 +67,7 @@ typedef struct http_sp2c_req_pkt_s
     u8 pad[3];
     u16 url_len;
     u8 url_data[HTTP_SP_URL_LEN_MAX];
+    u8 cookie[HTTP_SP_COOKIE_LEN_MAX];
 }http_sp2c_req_pkt_t;
 
 typedef struct http_sp2c_res_pkt_s {

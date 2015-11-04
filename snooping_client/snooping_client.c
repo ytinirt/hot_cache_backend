@@ -32,7 +32,7 @@ sc_res_list_t g_sc_res_stored_list;
 
 cache_rule_ctx_t *g_sc_cache_rule_ctx = NULL;
 
-static int sc_retrieve_inform(string_t *url);
+static int sc_retrieve_inform(string_t *url, char *cookie);
 
 /*
  * Not copy "http://", omitting parameter in o_url or not, is depending on with_para.
@@ -451,6 +451,7 @@ static u8 sc_spm_serve_down(http_sp2c_req_pkt_t *req)
     cache_rule_t *cache_rule;
     string_t key;
     char key_buf[HTTP_SP_URL_LEN_MAX];
+    char *cookie = NULL;
 
     url_str.data = (char *)req->url_data;
     url_str.len = req->url_len;
@@ -498,7 +499,10 @@ static u8 sc_spm_serve_down(http_sp2c_req_pkt_t *req)
     ri->key.data = ri->key_buf;
     ri->key.len = key.len;
 
-    ret = sc_retrieve_inform(&ri->url);
+    if (strlen((char *)(req->cookie)) > 0) {
+        cookie = (char *)(req->cookie);
+    }
+    ret = sc_retrieve_inform(&ri->url, cookie);
     if (ret != 0) {
         sc_dbg("Inform to retrieve failed: %s", req->url_data);
         status = HTTP_SP_STATUS_DEFAULT_ERROR;
@@ -1021,6 +1025,7 @@ err_out:
 
 static int sc_retrieve_download(string_t *url,
                                 string_t *file,
+                                string_t *cookie,
                                 unsigned long *exp_time,
                                 unsigned long *size)
 {
@@ -1054,6 +1059,14 @@ static int sc_retrieve_download(string_t *url,
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &f);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, sc_retrieve_parse_head);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &f);
+    if (cookie->len > 0) {
+        rc = curl_easy_setopt(curl, CURLOPT_COOKIE, cookie->data);
+        if (rc == CURLE_OK) {
+            sc_dbg("Using cookie %s : %s", file_buf, cookie->data);
+        } else {
+            sc_dbg("Cookie failed %s : %s", file_buf, cookie->data);
+        }
+    }
 
     rc = curl_easy_perform(curl);
     if (rc != CURLE_OK) {
@@ -1118,7 +1131,7 @@ out:
     return ret;
 }
 
-static void sc_retrieve_process(string_t *url, string_t *file)
+static void sc_retrieve_process(string_t *url, string_t *file, string_t *cookie)
 {
     int success = 0;
     unsigned long exp_time = 0, size = 0;
@@ -1127,7 +1140,7 @@ static void sc_retrieve_process(string_t *url, string_t *file)
                     (int)(url->len), url->data, (int)(file->len), file->data);
     sc_create_full_path(file, 0777);
 
-    success = sc_retrieve_download(url, file, &exp_time, &size);
+    success = sc_retrieve_download(url, file, cookie, &exp_time, &size);
 
     if (success) {
         sc_retrieve_ret_result(url, 1, exp_time, size);
@@ -1137,11 +1150,12 @@ static void sc_retrieve_process(string_t *url, string_t *file)
     }
 }
 
-static int sc_retrieve_inform(string_t *url)
+static int sc_retrieve_inform(string_t *url, char *cookie)
 {
-    string_t file_str;
+    string_t file_str, cookie_str;
     cache_rule_t *rule;
     char file_buf[HTTP_SP_URL_LEN_MAX + HTTP_LOCAL_FILE_ROOT_MAX];
+    char cookie_buf[HTTP_SP_COOKIE_LEN_MAX];
     int ret;
     pid_t pid;
 
@@ -1160,6 +1174,15 @@ static int sc_retrieve_inform(string_t *url)
         return -1;
     }
 
+    if (cookie != NULL) {
+        cookie_str.len = strlen(cookie);
+        cookie_str.data = cookie_buf;
+        strcpy(cookie_buf, cookie);
+    } else {
+        cookie_str.data = NULL;
+        cookie_str.len = 0;
+    }
+
     if ((pid = fork()) < 0) {
         sc_dbg("Fork process to download failed: %*s", (int)(url->len), url->data);
         return -1;
@@ -1167,7 +1190,7 @@ static int sc_retrieve_inform(string_t *url)
         /* 子进程 */
         file_str.data = file_buf;
         file_str.len += SC_WEB_SERVER_ROOT_LEN;
-        sc_retrieve_process(url, &file_str);
+        sc_retrieve_process(url, &file_str, &cookie_str);
         /* 子进程处理完毕后直接终止进程 */
         exit(0);
     } else {
