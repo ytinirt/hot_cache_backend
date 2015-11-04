@@ -264,7 +264,6 @@ cache_host_t *cache_host_find(cache_host_ctx_t *ctx, string_t *host)
     match_label = label;
 
     if (ht_index < host_ht_max) {
-        NOTICE("ht_index %d, %*s", ht_index, label[1].len, label[1].data);
         host_root = cache_host_hash_find_root(ctx->hash_table[ht_index], &label[1]);
         count -= 2;
         match_label = &label[2];
@@ -367,7 +366,6 @@ static btrie_node_t *cache_host_add(cache_host_ctx_t *ctx, string_t *name)
     match_label = label;
 
     if (ht_index < host_ht_max) {
-        NOTICE("ht_index %d, %*s", ht_index, label[1].len, label[1].data);
         ptr_host_root = cache_host_hash_add_root(ctx, ctx->hash_table[ht_index], &label[1]);
         if (ptr_host_root == NULL) {
             return NULL;
