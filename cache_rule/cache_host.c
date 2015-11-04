@@ -42,12 +42,14 @@ static inline int cache_host_parse_deep(string_t label[], int label_count)
      */
     if (label[0].len == 2) {
         p_cc = (char *)&country_code;
-#if ARCH_LITTLE_ENDIAN /* Little Endian, eg. x86, x64 */
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ /* Little Endian, eg. x86, x64 */
         p_cc[0] = label[0].data[1];
         p_cc[1] = label[0].data[0];
-#else /* Big Endian */
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* Big Endian */
         p_cc[0] = label[0].data[0];
         p_cc[1] = label[0].data[1];
+#else
+#error "CPU ENDIAN is not defined"
 #endif
         switch (country_code) {
         case CC_cn: case CC_us: case CC_uk: case CC_kr: case CC_jp: case CC_eu:
@@ -65,16 +67,18 @@ static inline int cache_host_parse_deep(string_t label[], int label_count)
      */
     if (need_check && (label[1].len == 3)) {
         p_gc = (char *)&generic_code;
-#if ARCH_LITTLE_ENDIAN /* Little Endian */
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ /* Little Endian, eg. x86, x64 */
         // p_gc[0] = 0;
         p_gc[1] = label[1].data[2];
         p_gc[2] = label[1].data[1];
         p_gc[3] = label[1].data[0];
-#else /* Big Endian */
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* Big Endian */
         p_gc[0] = label[1].data[0];
         p_gc[1] = label[1].data[1];
         p_gc[2] = label[1].data[2];
         // p_gc[3] = 0;
+#else
+#error "CPU ENDIAN is not defined"
 #endif
         switch (generic_code) {
         case GC_com: case GC_net: case GC_org: case GC_gov: case GC_edu: case GC_biz:

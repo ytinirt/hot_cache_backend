@@ -10,8 +10,6 @@
 /***************************************************************************************************
  * Macro definition for Configuring
  */
-#define ARCH_LITTLE_ENDIAN                  1
-
 #define CACHE_HOST_CFG_MAX_COUNT            256 /* 配置host容量 */
 #define CACHE_HOST_NAME_MAX_LEN             128 /* host长度上限值 */
 #define CACHE_HOST_AVR_RULE_COUNT           4   /* 每host的平均规则数量，非限制值，仅供资源预留 */
