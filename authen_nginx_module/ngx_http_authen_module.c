@@ -114,7 +114,7 @@ static void *ngx_http_authen_create_loc_conf(ngx_conf_t *cf)
     return authencf;
 }
 
-static void ngx_http_authen_pass_do(const struct sockaddr_in *sa, const char *address)
+static void ngx_http_authen_pass_do(const struct sockaddr_in *sa, const char *address, ngx_http_request_t *r)
 {
     int nsend, nrecv, msglen;
     int sockfd;
@@ -124,6 +124,7 @@ static void ngx_http_authen_pass_do(const struct sockaddr_in *sa, const char *ad
     salen = sizeof(struct sockaddr_in);
     sockfd = ngx_socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, ngx_socket_errno, ngx_socket_n " failed");
         ngx_log_stderr(NGX_OK, "socket() failed");
         return;
     }
@@ -153,12 +154,15 @@ out:
     return;
 }
 
-static void ngx_http_authen_pass(ngx_http_authen_conf_t *cf, ngx_str_t *addr)
+static void ngx_http_authen_pass(ngx_http_authen_conf_t *cf, ngx_http_request_t *r)
 {
-    pid_t pid;
+//    pid_t pid;
     char address[64];
     struct sockaddr_in sa;
     socklen_t salen;
+    ngx_str_t *addr;
+
+    addr = &r->connection->addr_text;
 
     if (cf->addr.len == 0 || cf->addr.data == NULL) {
         ngx_log_stderr(NGX_OK, "Missing Authen IP address");
@@ -182,16 +186,16 @@ static void ngx_http_authen_pass(ngx_http_authen_conf_t *cf, ngx_str_t *addr)
     }
     sa.sin_addr.s_addr = ngx_inet_addr(cf->addr.data, cf->addr.len);
 
-    if ((pid = fork()) < 0) {
-        ngx_log_stderr(NGX_OK, "Fork() failed.");
-        return;
-    } else if (pid == 0) {
-        /* 子进程，通知设备开启认证 */
-        ngx_http_authen_pass_do(&sa, address);
-        exit(0);
-    } else {
-        /* 父进程无操作 */
-    }
+//    if ((pid = fork()) < 0) {
+//        ngx_log_stderr(NGX_OK, "Fork() failed.");
+//        return;
+//    } else if (pid == 0) {
+//        /* 子进程，通知设备开启认证 */
+        ngx_http_authen_pass_do(&sa, address, r);
+//        exit(0);
+//    } else {
+//        /* 父进程无操作 */
+//    }
 
     return;
 }
@@ -203,7 +207,7 @@ static void ngx_http_authen_post_handler(ngx_http_request_t *r)
     authencf = (ngx_http_authen_conf_t *)ngx_http_get_module_loc_conf(r, ngx_http_authen_module);
 
     ngx_log_stderr(NGX_OK, "Authen request from: %V", &(r->connection->addr_text));
-    ngx_http_authen_pass(authencf, &(r->connection->addr_text));
+    ngx_http_authen_pass(authencf, r);
 
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = 0;
