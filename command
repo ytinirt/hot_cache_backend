@@ -163,6 +163,9 @@ case "$1" in
         ;;
 esac
 
+echo "Create $TMP"
+mkdir -p $TMP
+
 # 【第1步】交叉编译Nginx
 cd $ROOT_NGX
 echo "Enter $ROOT_NGX"
