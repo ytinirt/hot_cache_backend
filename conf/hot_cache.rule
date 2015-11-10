@@ -1,0 +1,272 @@
+# ***规则编写说明***
+#
+# 注释行以'#'开头
+#
+# HOST hostname_or_IPaddress [SAME_AS]
+#   关键字HOST后面跟上需要缓存资源的URL中主机域名或IP地址；
+#       例如：
+#           HOST car0.autoimg.cn
+#       表明待缓存的主机域名为car0.autoimg.cn，URL中主机域名完全相同才会进行下一步匹配。
+#       主机域名支持使用通配符'*'：
+#           1) 将主机域名或IP地址（后面统称host）以'.'做分隔符，分为多个标签（RFC中称作label），
+#              每个标签实际是host的子字符串。
+#           2) 以label为单位指定通配符，即可将整个label指定为通配符，而不能将label中某个字符指定为通配符。
+#              例如可配置a.*.com，中间的label将匹配任意非空字符串；配置a.b*c.com则是非法的。
+#           3) 严格依次匹配从右向左label，因此当有如下两条host规则：
+#                  HOST a.b.com
+#                  HOST a.c.*
+#              匹配a.c.com时，将找不到规则。
+#              这和查找树的结构有关。由于是至右向左的一级一级的匹配，"com"比通配符'*'具有更高的优先级，匹配"*.com"
+#              后实际上选择了a.b.com规则进入下一级比较，但"*.b.com"和a.c.com不匹配，因此最终未找到规则。
+#       综上，host的顶级域名和一级域名不允许使用通配符，建议仅在host中最左边（最低级）的label上使用通配符。
+#
+#   要设置默认host的规则，可将hostname_or_IPaddress配置为"default"（不带双引号）
+#       例如：
+#           HOST default
+#       当所有的host都未匹配时将使用默认hsot的规则进行匹配，注意：默认host只能配置一个。
+#
+#   关键字SAME_AS指明本HOST与上一个HOST的规则完全一致，不需要再重复指定RULE
+#       例如：
+#           HOST car0.autoimg.cn
+#           RULE 0=/car S=.jpg CACHE_SP SPWRITE UPSTREAM KEY_FILE
+#           HOST car1.autoimg.cn SAME_AS
+#           HOST img.autohome.com.cn SAME_AS
+#       主机car1.autoimg.cn和主机img.autohome.com.cn（被称作镜像host），与前面car0.autoimg.cn（被称作主host）的规则
+#       完全一致，直接使用SAME_AS即可。
+#       注意：镜像host之前必须有一个配置了规则的主host。
+#
+# RULE 匹配信息配置项  操作信息配置项  关键字生成配置项
+#   匹配信息的配置命令有：{slash_index=value | T=value | S=value}
+#   操作信息的配置命令有：{DBG_PRINT | {[CACHE_SP] [REDIRECT_PARA] {UPSTREAM | SPWRITE}}}
+#   关键字生的配置命令有：{KEY_S{ALL|slash_index}} [KEY_FILE] [KEY_PARA {PARA=name} [LS=value]]
+#   关键字RULE指定具体的匹配规则，其必须紧随所属的host，中间不能隔行。
+#
+#   例，有如下URL：
+#   http://192.168.5.66/ngcf/output/10_4_3b28_p2T2/rsr820-tw_186022_install-main_327360/RSR820-TW_10.4(3b28)p2T2_R186022_install.bin
+#                      ^                                                                                                        ^
+#                      |                                                                                                        | 后缀Suffix
+#                      | 该斜杠编号（slash_index）为0，后面的斜杠依次递增
+#
+#   slash_index指定要检查的斜杠编号，等于号后面指定需要匹配的斜杠内容slash_value_in_url，如"0=/ngcf"
+#   可配置多个该匹配项，如：
+#       RULE 0=/activeupdate 1=/preopr 2=/ctlrpo S=.7z CACHE_SP UPSTREAM KEY_SALL
+#   对于某些资源的URL，我们仅希望有一个斜杠，例如
+#       http://dl2.360safe.com/abc.cab
+#   是我们希望匹配和缓存的资源，但
+#       http://dl2.360safe.com/xxx/abc.cab
+#   我们不希望缓存，此时可通过如下规则实现：
+#       HOST dl2.360safe.com
+#       RULE 1= S=.cab CACHE_SP UPSTREAM KEY_SALL
+#   其中虽然指定了斜杠编号1，但等于号后面没有任何内容，表明不希望URL有斜杠1
+#
+#   关键字T指定资源尾部斜杠匹配内容，"T=/RSR820-TW_10.4(3b28)p2T2_R186022_install.bin"，一般用在URL参数生成key值时。
+#
+#   关键字S指定资源的后缀suffix，等于号后面指定具体的后缀，如"S=.bin"，要匹配不带后缀的URL时可指定"S="即可。
+#
+#   关键字DBG_PRINT配置URL匹配规则后不做缓存操作，仅打印url信息用以信息收集或debug。
+#       注意：当配置了该选项后其余操作信息配置项将失效。
+#
+#   关键字CACHE_SP配置在设备快转中触发识别URL，一般都需要配置，否则只能通过CLI手动指定下载URL资源。
+#
+#   关键字REDIRECT_PARA配置在重定向时携带用户原始请求的参数。
+#
+#   关键字UPSTREAM和SPWRITE指定资源缓存的方式，UPSTREAM表示由设备主动缓存下载，SPWRITE则配置设备转发数据的同时直接缓存资源到本地，
+#       这两种方式至少配置一种，也可同时配置。
+#
+#   关键字KEY_SALL表明将所有斜杠及其内容用于生成key值，一般规则全用它即可。
+#       针对某些URL中携带会话随机值，不能将其作为key值，因此也可通过KEY_Sslash_index，具体指定用于生成key值的slash，其中slash_index同
+#       前文中说明，例如要将slash0和slash3用于生成key值，则RULE中加上"KEY_S0 KEY_S3"即可。
+#
+#   关键字KEY_FILE表明将文件名（末尾斜杠内容）用于生成key值，当URL中斜杠不多时虽然可通过KEY_Sx指定最后一个斜杠，但KEY_FILE更加便捷。
+#       若通过KEY_Sx方式和KEY_FILE都指定了文件名用于生成key值，文件名只会在key中出现一次，并不会重复出现。
+#
+#   关键字KEY_PARA表明URL中可能携带的参数也要用于key值计算，例如下URL:
+#       http://10.128.10.81:8080/zcgl/zcgl/review/onLineViewAction!downWord.do?dto.ya9501=7&dto.yh5000=2003296
+#       针对这种服务器根据URL参数返回具体资源的情况，无法通过斜杠及其内容区分资源，必须借助KEY_PARA，以对不同内容加以区别。
+#   关键字PARA用以表明关心（用于生成key）的参数名称，例如PARA=dto.ya9501，若指定了该参数，则生成key时会将该参数及其值置于key中。
+#       当然，可以同时指定多个（系统做了限制，目前只认前3个）参数，例如"PARA=dto.ya9501 PARA=dto.yh5000"
+#   关键字LS指定生成本地文件名时用的后缀名，其只能在有KEY_PARA时配置，因为针对服务器根据URL参数返回具体资源的情况，无法自动获知保存资源
+#       的类型，因此可通过LS指定其后缀，例如"LS=.doc"，则该规则表示生成的本地文件名后缀为.doc。
+#
+# ***文件必须以空白行结尾***
+#
+
+# 默认host，包括优酷视频
+    HOST default
+    RULE 0=/youku S=.flv CACHE_SP UPSTREAM REDIRECT_PARA KEY_S0 KEY_FILE
+    RULE 0=/youku S=.mp4 CACHE_SP UPSTREAM REDIRECT_PARA KEY_S0 KEY_FILE
+
+# 苹果的App Store规则
+HOST *.phobos.apple.com
+RULE S=.ipa CACHE_SP UPSTREAM KEY_FILE
+# 添加苹果域名，允许到它的请求
+HOST *.apple.com
+HOST *.mzstatic.com
+HOST *.symcd.com
+HOST *.symcb.com
+HOST *.verisign.com
+HOST *.itools.info
+# 以下几个Host在苹果连接Wi-Fi后用于检查联通性
+HOST *.thinkdifferent.us
+HOST *.appleiphonecell.com
+HOST *.ibook.info
+
+# 添加WindowsPhone域名，允许到它的请求
+HOST *.windowsphone.com
+
+# 工商银行APP，具体链接如下
+# www.icbc.com.cn/icbc/html/download/dkq/ICBCAndroidBank.apk
+# www.icbc.com.cn/icbc/html/download/dkq/ICBCMIMSClient112.apk
+# www.icbc.com.cn/icbc/html/download/dkq/ICBCMall.apk
+# www.icbc.com.cn/ICBC/html/download/dkq/ICBCAndroidDirectBank.apk
+# www.icbc.com.cn/ICBC/html/download/dkq/ICBC_E_Investment_setup_android.apk
+# www.icbc.com.cn/ICBC/html/download/dkq/ICBCCorpAndroidBank.apk
+# www.icbc.com.cn/ICBC/html/download/dkq/ICBCAndroidSMSBank.apk
+# www.icbc.com.cn/ICBC/html/download/dkq/ICBCAndroidAbroadBank.apk
+HOST www.icbc.com.cn
+RULE 0=/icbc S=.apk CACHE_SP UPSTREAM KEY_FILE
+RULE 0=/ICBC S=.apk CACHE_SP UPSTREAM KEY_FILE
+# 添加工行域名，允许到它的请求
+HOST *.icbc.com.cn
+HOST *.qq.com
+HOST *.baidu.com
+
+# 工行创意大赛相关域名，允许到它的请求 http://icbc.threestudio.cc/wechat
+HOST icbc.threestudio.cc
+RULE 0=/wechat S=.jpg CACHE_SP SPWRITE UPSTREAM KEY_SALL
+RULE 0=/wechat S=.png CACHE_SP SPWRITE UPSTREAM KEY_SALL
+HOST *.threestudio.cc
+
+# 招商银行网页
+HOST szdl.cmbchina.com
+RULE 0=/download S=.apk CACHE_SP UPSTREAM KEY_SALL
+
+# 乐商店
+HOST apk.lenovomm.com
+RULE 7=/app-apk-lestore S=.apk CACHE_SP UPSTREAM KEY_FILE
+HOST uapk.lenovomm.com
+RULE 7=/app-apk-lestore S=.apk CACHE_SP UPSTREAM KEY_FILE
+HOST apk1.lenovomm.com
+RULE 7=/app-apk-lestore S=.apk CACHE_SP UPSTREAM KEY_FILE
+HOST dl.lenovomm.com
+RULE 8=/app-apk-lestore S=.apk CACHE_SP UPSTREAM KEY_FILE
+
+# 小米应用商店
+HOST *.market.mi-img.com
+RULE 0=/download 1=/AppStore S=.apk CACHE_SP UPSTREAM KEY_S0 KEY_S1 KEY_FILE
+RULE 0=/download 1=/AppStore S=.mds CACHE_SP UPSTREAM KEY_S0 KEY_S1 KEY_FILE
+HOST *.market.xiaomi.com SAME_AS
+
+# 百度应用APP
+HOST w.gdown.baidu.com
+RULE 0=/data 1=/wisegame S=.apk CACHE_SP UPSTREAM KEY_S0 KEY_S1 KEY_FILE
+HOST gdown.baidu.com SAME_AS
+
+    # 湖北人社厅缓存规则
+    HOST 10.128.10.81:8080
+    RULE 0=/zcgl S=.jpg CACHE_SP SPWRITE UPSTREAM KEY_SALL
+    RULE 0=/zcgl S=.png CACHE_SP SPWRITE UPSTREAM KEY_SALL
+    RULE 0=/zcgl S=.gif CACHE_SP SPWRITE UPSTREAM KEY_SALL
+    RULE 0=/zcgl T=/onLineViewAction!downWord.do CACHE_SP UPSTREAM KEY_SALL KEY_PARA PARA=dto.yh5000 PARA=dto.ya9501 PARA=dto.yae392 LS=.doc
+    RULE 0=/zcgl T=/onLineViewAction!getImgInfo.do CACHE_SP UPSTREAM KEY_SALL KEY_PARA PARA=dto.yh5000 PARA=dto.ya9501 PARA=dto.yae392 LS=.jpg
+    RULE 0=/zcgl T=/onLineViewAction!viewImg.do CACHE_SP UPSTREAM KEY_SALL KEY_PARA PARA=dto.yh5000 PARA=dto.ya9501 PARA=dto.yae392 LS=.jpg
+
+# 研究院编译农场缓存规则
+HOST 192.168.5.60
+RULE 0=/ngcf S=.sym CACHE_SP UPSTREAM KEY_S3 KEY_FILE
+RULE 0=/ngcf S=.bin CACHE_SP UPSTREAM KEY_S3 KEY_FILE
+RULE 0=/ngcf S=.bz2 CACHE_SP UPSTREAM KEY_S3 KEY_FILE
+RULE 0=/ngcf S=.gz CACHE_SP UPSTREAM KEY_S3 KEY_FILE
+HOST 192.168.5.61 SAME_AS
+HOST 192.168.5.62 SAME_AS
+HOST 192.168.5.63 SAME_AS
+HOST 192.168.5.64 SAME_AS
+HOST 192.168.5.65 SAME_AS
+HOST 192.168.5.66 SAME_AS
+HOST 192.168.5.67 SAME_AS
+HOST 192.168.5.68 SAME_AS
+HOST 192.168.5.69 SAME_AS
+HOST 192.168.5.70 SAME_AS
+HOST *.ruijie.com.cn
+HOST *.ruijie.net
+
+# 汽车之家图片缓存规则
+HOST car0.autoimg.cn
+RULE 0=/upload S=.jpg CACHE_SP SPWRITE UPSTREAM KEY_FILE
+RULE 0=/selected S=.jpg CACHE_SP SPWRITE UPSTREAM KEY_FILE
+RULE 0=/car S=.jpg CACHE_SP SPWRITE UPSTREAM KEY_FILE
+HOST car1.autoimg.cn SAME_AS
+HOST img.autohome.com.cn SAME_AS
+HOST car0.m.autoimg.cn
+RULE 0=/upload S=.jpg CACHE_SP SPWRITE UPSTREAM KEY_FILE
+RULE 0=/car 1=/upload S=.jpg CACHE_SP SPWRITE UPSTREAM KEY_FILE
+HOST car1.m.autoimg.cn SAME_AS
+
+# Windows系统更新缓存规则
+HOST download.windowsupdate.com
+RULE 0=/msdownload S=.cab CACHE_SP UPSTREAM KEY_SALL
+RULE 0=/msdownload S=.exe CACHE_SP UPSTREAM KEY_SALL
+RULE 0=/msdownload S=.msu CACHE_SP UPSTREAM KEY_SALL
+RULE 0=/msdownload S=.psf CACHE_SP UPSTREAM KEY_SALL
+RULE 1=/msdownload S=.cab CACHE_SP UPSTREAM KEY_SALL
+RULE 1=/msdownload S=.exe CACHE_SP UPSTREAM KEY_SALL
+RULE 1=/msdownload S=.msu CACHE_SP UPSTREAM KEY_SALL
+RULE 1=/msdownload S=.psf CACHE_SP UPSTREAM KEY_SALL
+HOST *.download.windowsupdate.com SAME_AS
+HOST qh.dlservice.microsoft.com
+RULE 0=/download S=.exe CACHE_SP UPSTREAM KEY_SALL
+RULE 0=/download S=.msu CACHE_SP UPSTREAM KEY_SALL
+HOST tc.dlservice.microsoft.com SAME_AS
+
+# McAfee安全软件缓存规则
+HOST download.mcafee.com
+RULE 0=/molbin S=.cab CACHE_SP UPSTREAM KEY_SALL
+RULE 0=/molbin S=.dat CACHE_SP UPSTREAM KEY_SALL
+RULE 0=/molbin S=.gem CACHE_SP UPSTREAM KEY_SALL
+HOST b2b-download.mcafee.com
+RULE 0=/products 1=/evaluation S=.zip CACHE_SP UPSTREAM KEY_SALL
+RULE 0=/products 1=/evaluation S=.Zip CACHE_SP UPSTREAM KEY_SALL
+
+# 奇虎360安全卫士和杀毒软件缓存规则
+HOST down.360safe.com
+RULE 0=/superkiller S=.cab CACHE_SP UPSTREAM KEY_SALL
+RULE 0=/v5 S=.cab CACHE_SP UPSTREAM KEY_SALL
+RULE 0=/superkiller5 S=.cab CACHE_SP UPSTREAM KEY_SALL
+RULE 1= S=.cab CACHE_SP UPSTREAM KEY_SALL
+RULE 1= S=.exe CACHE_SP UPSTREAM KEY_SALL
+HOST sdupf.360.cn
+RULE 0=/flib S=.cab CACHE_SP UPSTREAM KEY_SALL
+HOST sdup.360.cn
+RULE 0=/lib S=.cab CACHE_SP UPSTREAM KEY_SALL
+RULE 0=/savapi S=.cab CACHE_SP UPSTREAM KEY_SALL
+HOST dlleak.360safe.com
+RULE 0=/leak S=.exe CACHE_SP UPSTREAM KEY_SALL
+RULE 0=/leak S=.msu CACHE_SP UPSTREAM KEY_SALL
+HOST dlleak6.360safe.com SAME_AS
+HOST dl.360safe.com
+RULE 0=/v5 S=.cab CACHE_SP UPSTREAM KEY_SALL
+RULE 1= S=.cab CACHE_SP UPSTREAM KEY_SALL
+RULE 1= S=.exe CACHE_SP UPSTREAM KEY_SALL
+HOST dl2.360safe.com SAME_AS
+HOST sdl.360safe.com
+RULE S=.cab CACHE_SP UPSTREAM KEY_SALL
+
+# 趋势科技安全软件缓存规则
+HOST iau-mirror.activeupdate.trendmicro.com.cn
+RULE 0=/activeupdate 1=/preopr 2=/ctlrpo S=.7z CACHE_SP UPSTREAM KEY_SALL
+HOST csm-as.activeupdate.trendmicro.com:80
+RULE 0=/activeupdate 1=/antispam S=.zip CACHE_SP UPSTREAM KEY_SALL
+HOST wfbs70-p.activeupdate.trendmicro.com:80
+RULE 0=/activeupdate 1=/engine S=.zip CACHE_SP UPSTREAM KEY_SALL
+RULE 0=/activeupdate 1=/pattern S=.zip CACHE_SP UPSTREAM KEY_SALL
+HOST wfbs7-icss-p.activeupdate.trendmicro.com.cn:80
+RULE 0=/activeupdate 1=/china 2=/pattern S=.zip CACHE_SP UPSTREAM KEY_SALL
+
+# 腾讯电脑管家缓存规则
+HOST dl_dir2.qq.com
+RULE 0=/invc 1=/QQPatch S=.msu CACHE_SP UPSTREAM KEY_SALL
+HOST dlied6.qq.com
+RULE 0=/invc 1=/xfspeed 2=/qqpcmgr S=.exe CACHE_SP UPSTREAM KEY_SALL
+
+# ***文件必须以空白行结尾***
+
